@@ -2,12 +2,13 @@ package drivers
 
 import (
 	"errors"
-	"github.com/npat-efault/crc16"
 	"qBox/models"
 	"qBox/services/log"
 	"qBox/services/net"
 	"strconv"
 	"time"
+
+	"github.com/npat-efault/crc16"
 )
 
 // Преобразователь измерительный многофункциональный "ИСТОК-ТМ3", НПЦ "Спецсистема"
@@ -65,26 +66,11 @@ func (tm3 *TM3) Init(counterNumber byte, network *net.Network, logger *log.Logge
 	year := ef07 >> 0x09
 	month := ef07 >> 0x05 & 0x0F
 
-	logger.Debug("Год - %d", year)
-	serial := strconv.FormatUint(uint64(year), 10)
+	tm3.logger.Debug("Год - %d", year)
+	tm3.logger.Debug("Месяц - %d", month)
 
-	logger.Debug("Месяц - %d", month)
-	if uint64(month) < 10 {
-		serial += "0"
-	}
-	serial += strconv.FormatUint(uint64(ef07>>0x05&0x0F), 10)
-
-	ef05 := uint64(toWord([2]byte{response[2], response[3]}))
-	tm3.logger.Debug("Номер партии - %d", ef05)
-	if (ef05) < 10 {
-		serial += "00"
-	} else if ef05 < 100 {
-		serial += "0"
-	}
-	serial += strconv.FormatUint(ef05, 10)
-
-	tm3.logger.Debug("Серийный номер - %s", serial)
-	tm3.data.Serial = serial
+	tm3.data.Serial = tm3.initSerial(year, month, ef07, response)
+	tm3.logger.Debug("Серийный номер - %s", tm3.data.Serial)
 
 	tm3.logger.Info("Запрос количества систем")
 	response, err = tm3.runIO([]byte{tm3.number, 0x03, 0x01, 0x43, 0x00, 0x01})
@@ -102,19 +88,23 @@ func (tm3 *TM3) Init(counterNumber byte, network *net.Network, logger *log.Logge
 
 	tm3.logger.Info("Запрос единиц измерения энергии")
 
-	tm3.data.UnitQ = models.Gcal
-
 	response, err = tm3.runIO([]byte{tm3.number, 0x03, 0xED, 0x01, 0x00, 0x01})
 	for err != nil {
 		return err
 	}
 
 	unitQ := int(toWord([2]byte{response[0], response[1]}))
-	if unitQ == 1 {
-		tm3.data.UnitQ = models.Gcal
-	}
-	if unitQ == 0 {
-		tm3.data.UnitQ = models.GJ
+	switch unitQ {
+	case 0:
+		{
+			tm3.data.UnitQ = models.GJ
+			break
+		}
+	default:
+		{
+			tm3.data.UnitQ = models.Gcal
+			break
+		}
 	}
 
 	tm3.logger.Info("Запрос единиц измерения давления")
@@ -125,20 +115,33 @@ func (tm3 *TM3) Init(counterNumber byte, network *net.Network, logger *log.Logge
 	}
 
 	unitP := int(toWord([2]byte{response[0], response[1]}))
-
-	if unitP == 0 { // КПа
-		tm3.coefficientP = 0.001
-	} else if unitP == 1 { // кгс/см3
-		tm3.coefficientP = 0.0980665
-	} else if unitP == 2 { // бар
-		tm3.coefficientP = 0.1
-	} else if unitP == 3 { // МПа
-		tm3.coefficientP = 1.0
-	} else {
-		tm3.logger.Debug("Ошибка при расшифровке ед. измерения давления: %d ", unitP)
-		return errors.New("не определены единицы измерения давления")
+	switch unitP {
+	case 0:
+		{
+			tm3.coefficientP = 0.001
+			break
+		}
+	case 1:
+		{
+			tm3.coefficientP = 0.0980665
+			break
+		}
+	case 2:
+		{
+			tm3.coefficientP = 0.1
+			break
+		}
+	case 3:
+		{
+			tm3.coefficientP = 1.0
+			break
+		}
+	default:
+		{
+			tm3.logger.Debug("Ошибка при расшифровке ед. измерения давления: %d ", unitP)
+			return errors.New("не определены единицы измерения давления")
+		}
 	}
-
 	logger.Info("Запрос единиц измерения объёма, массы")
 
 	response, err = tm3.runIO([]byte{tm3.number, 0x03, 0xED, 0x02, 0x00, 0x01})
@@ -148,13 +151,22 @@ func (tm3 *TM3) Init(counterNumber byte, network *net.Network, logger *log.Logge
 
 	unitV := int(toWord([2]byte{response[0], response[1]}))
 
-	if unitV == 0 { // м3 или т
-		tm3.coefficientV = 1.0
-	} else if unitP == 1 { // тысячи м3 или тысячи тонн
-		tm3.coefficientV = 0.001
-	} else {
-		tm3.logger.Debug("Ошибка при расшифровке ед. измерения воды: %d ", unitV)
-		return errors.New("не определены единицы измерения воды")
+	switch unitV {
+	case 0:
+		{
+			tm3.coefficientV = 1.0
+			break
+		}
+	case 1:
+		{
+			tm3.coefficientV = 0.001
+			break
+		}
+	default:
+		{
+			tm3.logger.Debug("Ошибка при расшифровке ед. измерения воды: %d ", unitV)
+			return errors.New("не определены единицы измерения воды")
+		}
 	}
 
 	return nil
@@ -178,63 +190,14 @@ func (tm3 *TM3) Read() (*models.DataDevice, error) {
 	t := [4]byte{response[0], response[1], response[2], response[3]}
 	tm3.data.Time = time.Unix(int64(ToLong(t)), 0)
 
-	i := 0
-
-	for i < len(tm3.data.Systems) {
-
-		tm3.data.Systems[i].Status = true
-
+	for i := 0; i < len(tm3.data.Systems); i++ {
 		tm3.logger.Info("Запрос данных для системы %d", i+1)
-		response, err = tm3.runIO([]byte{tm3.number, 0x03, 0x70, byte(i * 4), 0x00, 0x3A})
-		for err != nil {
+		system, err := tm3.setSystemData(tm3.data.Systems[i], response, i)
+		if err != nil {
 			return &tm3.data, err
 		}
 
-		tm3.data.Systems[i].SigmaQ = float64(float32(toDouble(response[0:8]) / 1000000))
-
-		tm3.data.Systems[i].Q1 = float64(float32(toDouble(response[8:16]) / 1000000))
-		tm3.data.Systems[i].M1 = float64(float32(toDouble(response[16:24])) * 0.001)
-		tm3.data.Systems[i].GM1 = calculateFloatByPointer(response, 24) * 0.001
-		tm3.data.Systems[i].GV1 = calculateFloatByPointer(response, 28) * tm3.coefficientV
-		tm3.data.Systems[i].T1 = calculateFloatByPointer(response, 32)
-		tm3.data.Systems[i].P1 = calculateFloatByPointer(response, 36) * tm3.coefficientP
-
-		if true {
-			tm3.data.Systems[i].Q2 = float64(float32(toDouble(response[40:48]) / 1000000))
-		} else {
-			// По договорённости тут должно лежать Q2, но при работе счётчика в "замкнутом" режиме по каким-то причинам
-			// не кладёт в этот адрес значение Q2. Значение лежит для первой системы в регистре 0x0480 в типе DOUBLE.
-			// Решено, что если такая система установлена, то надо обращать внимание только на Q результирующее
-			tm3.logger.Info("Запрос Q2 для замкнутой системы 1")
-			responseQ2, err := tm3.runIO([]byte{tm3.number, 0x03, 0x04, 0x80, 0x00, 0x04})
-			for err != nil {
-				return &tm3.data, err
-			}
-			tm3.data.Systems[i].Q2 = float64(float32(toDouble(responseQ2) / 1000000))
-		}
-
-		tm3.data.Systems[i].M2 = float64(float32(toDouble(response[48:56]) * 0.001))
-		tm3.data.Systems[i].GM2 = calculateFloatByPointer(response, 56) * 0.001
-		tm3.data.Systems[i].GV2 = calculateFloatByPointer(response, 60) * tm3.coefficientV
-		tm3.data.Systems[i].T2 = calculateFloatByPointer(response, 64)
-		tm3.data.Systems[i].P2 = calculateFloatByPointer(response, 68) * tm3.coefficientP
-
-		tm3.data.Systems[i].Q3 = float64(float32(toDouble(response[72:80]) / 1000000))
-
-		/**
-		Трубопровод подпитки. В ядре он не учтён.
-		*/
-		//M3 = float32(toDouble(response[80:88]) / 1000000)
-		//GM3 = toFloat([4]byte{response[91], response[58], response[57], response[88]})
-		//GV3 = toFloat([4]byte{response[95], response[62], response[61], response[92]})
-		//температура подпитки= toFloat([4]byte{response[99], response[66], response[65], response[96]})
-		//давление подпитки = toFloat([4]byte{response[103], response[70], response[69], response[100]})
-
-		tm3.data.Systems[i].T3 = calculateFloatByPointer(response, 104)
-		tm3.data.Systems[i].P3 = calculateFloatByPointer(response, 108) * tm3.coefficientP
-		tm3.data.Systems[i].TimeRunSys = calculateLongByPointer(response, 112)
-
-		i++
+		tm3.data.Systems[i] = *system
 	}
 
 	tm3.logger.Info("Запрос общего времени работы прибора")
@@ -282,4 +245,56 @@ func (tm3 *TM3) runIO(request []byte) ([]byte, error) {
 		return nil, err
 	}
 	return response[3 : len(response)-2], nil
+}
+
+func (tm3 *TM3) initSerial(year uint16, month uint16, ef07 uint16, response []byte) string {
+	serial := strconv.FormatUint(uint64(year), 10)
+	if uint64(month) < 10 {
+		serial += "0"
+	}
+	serial += strconv.FormatUint(uint64(ef07>>0x05&0x0F), 10)
+
+	ef05 := uint64(toWord([2]byte{response[2], response[3]}))
+	tm3.logger.Debug("Номер партии - %d", ef05)
+	if (ef05) < 10 {
+		serial += "00"
+	} else if ef05 < 100 {
+		serial += "0"
+	}
+
+	serial += strconv.FormatUint(ef05, 10)
+
+	return serial
+}
+
+func (tm3 *TM3) setSystemData(system models.SystemDevice, response []byte, systemNumber int) (*models.SystemDevice, error) {
+	system.Status = true
+
+	response, err := tm3.runIO([]byte{tm3.number, 0x03, 0x70, byte(systemNumber * 4), 0x00, 0x3A})
+	for err != nil {
+		return nil, err
+	}
+
+	system.SigmaQ = float64(float32(toDouble(response[0:8]) / 1000000))
+
+	system.Q1 = float64(float32(toDouble(response[8:16]) / 1000000))
+	system.M1 = float64(float32(toDouble(response[16:24])) * 0.001)
+	system.GM1 = calculateFloatByPointer(response, 24) * 0.001
+	system.GV1 = calculateFloatByPointer(response, 28) * tm3.coefficientV
+	system.T1 = calculateFloatByPointer(response, 32)
+	system.P1 = calculateFloatByPointer(response, 36) * tm3.coefficientP
+
+	system.Q2 = float64(float32(toDouble(response[40:48]) / 1000000))
+	system.M2 = float64(float32(toDouble(response[48:56]) * 0.001))
+	system.GM2 = calculateFloatByPointer(response, 56) * 0.001
+	system.GV2 = calculateFloatByPointer(response, 60) * tm3.coefficientV
+	system.T2 = calculateFloatByPointer(response, 64)
+	system.P2 = calculateFloatByPointer(response, 68) * tm3.coefficientP
+
+	system.Q3 = float64(float32(toDouble(response[72:80]) / 1000000))
+	system.T3 = calculateFloatByPointer(response, 104)
+	system.P3 = calculateFloatByPointer(response, 108) * tm3.coefficientP
+	system.TimeRunSys = calculateLongByPointer(response, 112)
+
+	return &system, nil
 }
