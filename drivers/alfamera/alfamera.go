@@ -1,25 +1,25 @@
 package alfamera
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math"
-
-	//"qBox/drivers/alfamera"
 	"qBox/models"
+	"qBox/services/convert"
 	"qBox/services/log"
 	"qBox/services/net"
+	"strconv"
+	"time"
 
 	"github.com/aldas/go-modbus-client"
-	"github.com/npat-efault/crc16"
 )
 
 type Alfamera struct {
+	data    models.DataDevice
 	logger  *log.LoggerService
 	number  byte
 	network *net.Network
+	client  *modbus.Client
 }
 
 func (alfamera *Alfamera) Init(counterNumber byte, network *net.Network, logger *log.LoggerService) error {
@@ -28,26 +28,32 @@ func (alfamera *Alfamera) Init(counterNumber byte, network *net.Network, logger 
 	alfamera.network = network
 	alfamera.number = counterNumber
 
+	alfamera.data.CoefficientKWh = 1 / 1.163 / 1000
+	alfamera.data.CoefficientMWh = 1 / 1.163 // 0.85984522785
+	alfamera.data.CoefficientGJ = 1 / (3.6 / alfamera.data.CoefficientMWh)
+
 	alfamera.logger.Info("Инициализация прибора,№ %d", alfamera.number)
 
-	b := modbus.NewRequestBuilder("10.178.4.14:951", 1)
+	b := modbus.NewRequestBuilder(fmt.Sprintf("%s:%d", network.GetIp(), network.GetPort()), alfamera.number)
 	requests, err := b.
 		Add(b.Byte(0xEF04, true)).
 		Add(b.Byte(0xEF05, false)).ReadHoldingRegistersRTU()
 
 	if err != nil {
+		alfamera.logger.Error("%s", err)
 		return err
 	}
 
 	client := modbus.NewRTUClient()
 	defer client.Close()
-	if err := client.Connect(context.Background(), "10.178.4.14:951"); err != nil {
+	if err := client.Connect(context.Background(), fmt.Sprintf("%s:%d", network.GetIp(), network.GetPort())); err != nil {
 		return err
 	}
 
 	for _, req := range requests {
 		resp, err := client.Do(context.Background(), req)
 		if err != nil {
+			alfamera.logger.Error("%s", err)
 			return err
 		}
 		_, err = req.ExtractFields(resp.(modbus.RegistersResponse), true)
@@ -59,113 +65,184 @@ func (alfamera *Alfamera) Init(counterNumber byte, network *net.Network, logger 
 	return nil
 }
 
-func (alfamera *Alfamera) Read(*models.DataDevice, error) {
-
-	// var response [] byte
-	// var err error
-
-	// alfamera.logger.Info("_")
-	// response, err = alfamera.runIO([]byte{})
-
-}
-
-func (alfamera *Alfamera) checkResponse(response []byte) bool {
-
-	if len(response) < 3 {
-		alfamera.logger.Info("")
-		return false
-	}
-
-	if response[0] != alfamera.number || response[1] != 0000 {
-		alfamera.logger.Info("")
-		return false
-	}
-
-	calculatedCheckSum := intToLittleEndian(crc16.Checksum(crc16.Modbus, response[:len(response)-2]))
-	checkSumResponse := response[len(response)-2:]
-	if calculatedCheckSum[0] != checkSumResponse[0] || calculatedCheckSum[1] != checkSumResponse[1] {
-		alfamera.logger.Info("Получен некорректный ответ. Контрольная сумма не совпадает.")
-		alfamera.logger.Debug("Ожидалась контрольная сумма- %X", calculatedCheckSum)
-		alfamera.logger.Debug("Получена контрольная сумма- %X", checkSumResponse)
-		return false
-	}
-
-	return true
-}
-
-func intToLittleEndian(i uint16) []byte {
-	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.LittleEndian, i)
-	return buf.Bytes()
-}
-
-func main() {
-
-	b := modbus.NewRequestBuilder("10.178.4.14:951", 1)
-	//Трубопровод 1
-	requests, _ := b.
-		Add(b.Byte(0x1600, true)).
-		Add(b.Byte(0x1600, false)).
-		Add(b.Byte(0x1601, true)).
-		Add(b.Byte(0x1601, false)).
-		Add(b.Byte(0x1602, true)).
-		Add(b.Byte(0x1602, false)).
-		Add(b.Byte(0x1603, true)).
-		Add(b.Byte(0x1603, false)).
-		Add(b.Byte(0x1604, true)).
-		Add(b.Byte(0x1604, false)).
-		Add(b.Byte(0x1605, true)).
-		Add(b.Byte(0x1605, false)).
-		Add(b.Byte(0x1606, true)).
-		Add(b.Byte(0x1606, false)).
-		Add(b.Byte(0x1607, true)).
-		Add(b.Byte(0x1607, false)).
-		Add(b.Byte(0x1608, true)).
-		Add(b.Byte(0x1608, false)).
-		Add(b.Byte(0x1609, true)).
-		Add(b.Byte(0x1609, false)).
-		Add(b.Byte(0x1610, true)).
-		Add(b.Byte(0x1610, false)).
-		Add(b.Byte(0x1611, true)).
-		Add(b.Byte(0x1611, false)).
-		Add(b.Byte(0x1612, true)).
-		Add(b.Byte(0x1612, false)).
-		Add(b.Byte(0x1613, true)).
-		Add(b.Byte(0x1613, false)).
-		ReadHoldingRegistersRTU()
-
+func (alfamera *Alfamera) Read() (*models.DataDevice, error) {
+	//Инициализация client для работы с ModBus RTU
 	client := modbus.NewRTUClient()
 	defer client.Close()
-	if err := client.Connect(context.Background(), "10.178.4.14:951"); err != nil {
+	if err := client.Connect(context.Background(), fmt.Sprintf("%s:%d", alfamera.network.GetIp(), alfamera.network.GetPort())); err != nil {
+		return &alfamera.data, err
+	}
+	//Подключение
+	b1 := modbus.NewRequestBuilder(fmt.Sprintf("%s:%d", alfamera.network.GetIp(), alfamera.network.GetPort()), 1)
+	b1 = alfamera.addTube(0, b1)
+	// b = alfamera.timeToDate(b)
+	// b = alfamera.serialToString(b)
+
+	requests, _ := b1.ReadHoldingRegistersRTU()
+
+	alfamera.data.TimeRequest = time.Now()
+	alfamera.data.AddNewSystem(0)
+	alfamera.data.Systems[0].Status = true
+
+	resp, err := client.Do(context.Background(), requests[0])
+	alfamera.logger.Debug("%s", resp)
+	if err != nil {
+		return &alfamera.data, err
+	}
+	fields, _ := requests[0].ExtractFields(resp.(modbus.RegistersResponse), true)
+	alfamera.logger.Debug("%d", len(fields))
+	alfamera.convertDataTube(fields)
+
+	b2 := modbus.NewRequestBuilder(fmt.Sprintf("%s:%d", alfamera.network.GetIp(), alfamera.network.GetPort()), 1)
+	b2 = alfamera.timeToDate(b2)
+	requests, _ = b2.ReadHoldingRegistersRTU()
+
+	alfamera.logger.Debug("%s", len(requests))
+	resp, err = client.Do(context.Background(), requests[0])
+	alfamera.logger.Debug("%s", requests[0])
+	if err != nil {
+		alfamera.logger.Debug("%s", err)
+
+		return &alfamera.data, err
+	}
+	fields, err = requests[0].ExtractFields(resp.(modbus.RegistersResponse), true)
+	if err != nil {
+		panic(err)
+	}
+	alfamera.logger.Debug("0")
+	alfamera.logger.Debug("%d", len(fields))
+
+	alfamera.convertDateTime(fields)
+
+	b3 := modbus.NewRequestBuilder(fmt.Sprintf("%s:%d", alfamera.network.GetIp(), alfamera.network.GetPort()), 1)
+	b3 = alfamera.serialToString(b3)
+	requests, _ = b3.ReadHoldingRegistersRTU()
+
+	resp, err = client.Do(context.Background(), requests[0])
+	alfamera.logger.Debug("1")
+	if err != nil {
+		return &alfamera.data, err
+	}
+	fields, _ = requests[0].ExtractFields(resp.(modbus.RegistersResponse), true)
+	alfamera.logger.Debug("2")
+	alfamera.logger.Debug("%s", alfamera.arrToSerial(fields))
+	alfamera.arrToSerial(fields)
+	return &alfamera.data, nil
+}
+
+func (alfamera *Alfamera) timeToDate(b *modbus.Builder) *modbus.Builder {
+
+	timeNow := uint16(0xEF50)
+
+	requests := b.
+		Add(b.Byte(timeNow+0, true)).
+		Add(b.Byte(timeNow+0, false)).
+		Add(b.Byte(timeNow+1, true)).
+		Add(b.Byte(timeNow+1, false))
+
+	return requests
+}
+
+func (alfamera *Alfamera) arrDateTime(dataTime int, fields []modbus.FieldValue) uint32 {
+
+	baseTime := 0
+	timeConvert := baseTime + dataTime*4
+	arr := [4]byte{
+		fields[timeConvert+2].Value.(byte),
+		fields[timeConvert+3].Value.(byte),
+		fields[timeConvert+0].Value.(byte),
+		fields[timeConvert+1].Value.(byte),
+	}
+
+	sum := convert.ToLong(arr)
+	return sum
+}
+
+func (alfamera *Alfamera) convertDateTime(fields []modbus.FieldValue) {
+
+	timestamp := alfamera.arrDateTime(0, fields)
+
+	i, err := strconv.ParseInt(strconv.FormatUint(uint64(timestamp), 10), 10, 64)
+	if err != nil {
 		panic(err)
 	}
 
-	for _, req := range requests {
-		resp, err := client.Do(context.Background(), req)
-		if err != nil {
-			panic(err)
-		}
+	tm := time.Unix(i, 0)
+	alfamera.data.Time = tm
 
-		fmt.Println(resp)
-
-		// registers, _ := resp.(*packet.ReadHoldingRegistersResponseRTU).AsRegisters(req.StartAddress)
-		// alarmDo1, _ := registers.Byte(0x1600, true)
-		// // alarmDo2, _ := registers.Byte(0x1600, false)
-		// alarmDo3, _ := registers.Byte(0x1601, true)
-		// alarmDo4, _ := registers.Byte(0x1601, false)
-		// fmt.Printf("%+v\n", alarmDo1)
-		//Конвертация трубопровода 1
-		fields, _ := req.ExtractFields(resp.(modbus.RegistersResponse), true)
-		fmt.Printf("Массовый расход ( qm ): %.2f кг/ч\n", math.Float32frombits(ToLong([4]byte{fields[2].Value.(byte), fields[3].Value.(byte), fields[0].Value.(byte), fields[1].Value.(byte)})))
-		fmt.Printf("Кол-во теплоты ( W ): %.2f Гкал/ч\n", 0.000000238843*math.Float32frombits(ToLong([4]byte{fields[6].Value.(byte), fields[7].Value.(byte), fields[4].Value.(byte), fields[5].Value.(byte)})))
-		fmt.Printf("Давление ( P ): %.2f кПа\n", math.Float32frombits(ToLong([4]byte{fields[10].Value.(byte), fields[11].Value.(byte), fields[8].Value.(byte), fields[9].Value.(byte)})))
-		fmt.Printf("Температура ( T ): %.2f °C\n", math.Float32frombits(ToLong([4]byte{fields[14].Value.(byte), fields[15].Value.(byte), fields[12].Value.(byte), fields[13].Value.(byte)})))
-		fmt.Printf("Перепады давления ( dP ): %.2f кПа\n", math.Float32frombits(ToLong([4]byte{fields[18].Value.(byte), fields[19].Value.(byte), fields[16].Value.(byte), fields[17].Value.(byte)})))
-		fmt.Printf("Энтальпия ( h ): %.2f кКал/кг\n", math.Float32frombits(ToLong([4]byte{fields[22].Value.(byte), fields[23].Value.(byte), fields[20].Value.(byte), fields[21].Value.(byte)})))
-		fmt.Printf("Плотность ( r ): %.2f кг/м3\n", math.Float32frombits(ToLong([4]byte{fields[26].Value.(byte), fields[27].Value.(byte), fields[24].Value.(byte), fields[25].Value.(byte)})))
-	}
 }
 
+func (alfamera *Alfamera) serialToString(b *modbus.Builder) *modbus.Builder {
+
+	serialRegistor := uint16(0xEF04)
+
+	requests := b.
+		Add(b.Byte(serialRegistor+0, true)).
+		Add(b.Byte(serialRegistor+0, false)).
+		Add(b.Byte(serialRegistor+1, true)).
+		Add(b.Byte(serialRegistor+1, false))
+
+	return requests
+}
+func (alfamera *Alfamera) arrToSerial(fields []modbus.FieldValue) [4]byte {
+	alfamera.logger.Debug("3")
+	alfamera.logger.Debug("%s,%s,%s,%s",
+		fields[0].Value,
+		fields[1].Value,
+		fields[2].Value,
+		fields[3].Value,
+	)
+	return [4]byte{fields[1].Value.(byte), fields[0].Value.(byte), fields[3].Value.(byte), fields[2].Value.(byte)}
+
+}
+
+func (alfamera *Alfamera) arrToProperty(properNumber int, fields []modbus.FieldValue) [4]byte {
+	basePropert := 0
+	tubePropert := basePropert + properNumber*4
+
+	return [4]byte{fields[tubePropert+2].Value.(byte), fields[tubePropert+3].Value.(byte), fields[tubePropert+0].Value.(byte), fields[tubePropert+1].Value.(byte)}
+}
+
+func (alfamera *Alfamera) convertDataTube(fields []modbus.FieldValue) {
+
+	alfamera.data.Systems[0].GM1 = (math.Float32frombits(ToLong(alfamera.arrToProperty(0, fields))) / 1000)
+	alfamera.data.Systems[0].Q1 = float64(0.000000238843 * math.Float32frombits(ToLong(alfamera.arrToProperty(1, fields))))
+	alfamera.data.Systems[0].P1 = math.Float32frombits(ToLong(alfamera.arrToProperty(2, fields)))
+	alfamera.data.Systems[0].T1 = math.Float32frombits(ToLong(alfamera.arrToProperty(3, fields)))
+
+}
+
+func (alfamera *Alfamera) addTube(tubeNumber uint16, b *modbus.Builder) *modbus.Builder {
+
+	baseRegistor := uint16(0x1600)
+	tubeRegistor := baseRegistor + tubeNumber*14
+	requests := b.
+		//qm
+		Add(b.Byte(tubeRegistor+0, true)).
+		Add(b.Byte(tubeRegistor+0, false)).
+		Add(b.Byte(tubeRegistor+1, true)).
+		Add(b.Byte(tubeRegistor+1, false)).
+		//W
+		Add(b.Byte(tubeRegistor+2, true)).
+		Add(b.Byte(tubeRegistor+2, false)).
+		Add(b.Byte(tubeRegistor+3, true)).
+		Add(b.Byte(tubeRegistor+3, false)).
+		//p
+		Add(b.Byte(tubeRegistor+4, true)).
+		Add(b.Byte(tubeRegistor+4, false)).
+		Add(b.Byte(tubeRegistor+5, true)).
+		Add(b.Byte(tubeRegistor+5, false)).
+		//T
+		Add(b.Byte(tubeRegistor+6, true)).
+		Add(b.Byte(tubeRegistor+6, false)).
+		Add(b.Byte(tubeRegistor+7, true)).
+		Add(b.Byte(tubeRegistor+7, false))
+		//Читатель регистров
+		// ReadHoldingRegistersRTU()
+	return requests
+}
+
+// ToLong Функция перевода
 func ToLong(bytes [4]byte) uint32 {
 	var amount uint32 = 0
 	for i := 0; i <= 3; i++ {

@@ -14,7 +14,8 @@ import (
 const connected = 0x01
 const disconnected = 0x02
 
-/**
+/*
+*
 Сервис для работы с TCP соединением
 */
 type Network struct {
@@ -248,6 +249,14 @@ func (network *Network) doRead(secondsTimeout uint8) ([]byte, error) {
 
 func (network *Network) setReadTimeout(seconds uint8) error {
 	return network.connection.SetReadDeadline(time.Now().Add(time.Duration(seconds) * time.Second))
+}
+
+func (network *Network) GetIp() string {
+	return network.host
+}
+
+func (network *Network) GetPort() int {
+	return network.port
 }
 
 func SplitHostPort(endpoint string) (host string, port int, err error) {
