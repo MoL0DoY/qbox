@@ -2,12 +2,13 @@ package drivers
 
 import (
 	"errors"
-	"github.com/npat-efault/crc16"
 	"qBox/models"
 	"qBox/services/log"
 	"qBox/services/net"
 	"strconv"
 	"time"
+
+	"github.com/npat-efault/crc16"
 )
 
 // Преобразователь измерительный многофункциональный "ИСТОК-ТМ3", НПЦ "Спецсистема"

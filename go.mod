@@ -9,6 +9,7 @@ require (
 
 require (
 	github.com/BurntSushi/toml v1.0.0 // indirect
+	github.com/aldas/go-modbus-client v0.0.0-20240128154126-880b74ede002 // indirect
 	github.com/go-ozzo/ozzo-config v0.0.0-20160627170238-0ff174cf5aa6 // indirect
 	github.com/hnakamur/jsonpreprocess v0.0.0-20171017030034-a4e954386171 // indirect
 	golang.org/x/text v0.3.7 // indirect

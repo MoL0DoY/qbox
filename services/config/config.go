@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"qBox/drivers"
+	"qBox/drivers/alfamera"
 	"qBox/drivers/skm2"
 	"qBox/drivers/skm2m"
 	"qBox/drivers/tem104k"
@@ -15,7 +16,7 @@ import (
 
 // Карта зарегистрированных драйверов.
 // Примечание: Добавляя новые драйвера, необходимо добавить описание в HELP для флага type
-var driversMap = [15]models.IDeviceDriver{
+var driversMap = [16]models.IDeviceDriver{
 	new(skm2.SKM),
 	new(drivers.SKU02B),
 	new(drivers.Tem104),
@@ -31,6 +32,7 @@ var driversMap = [15]models.IDeviceDriver{
 	new(tem104k.Tem104K),
 	new(drivers.TEM104M2),
 	new(skm2m.SKM),
+	new(alfamera.Alfamera),
 }
 
 const VersionCoreApp = "0.0.5"
@@ -147,7 +149,8 @@ func InitConfig() Config {
 			"\n\t   11 - TEM-104M"+
 			"\n\t   12 - TEM-104k"+
 			"\n\t   13 - TEM-104M2"+
-			"\n\t   14 - SKM2M.")
+			"\n\t   14 - SKM2M."+
+			"\n\t   15 - alfa-mera")
 
 	flag.UintVar(
 		&configService.counterNumber,
